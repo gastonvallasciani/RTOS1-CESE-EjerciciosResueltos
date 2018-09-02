@@ -51,6 +51,8 @@ typedef enum{
 typedef struct {
 	ledSelect_t ledSelect;
 	uint8_t pwmDutyCounter;
+	uint8_t pwmDutyFlagSuma;
+	uint8_t pwmDutyFlagResta;
 	ledToggle_t led1Toggle;
 } pwmManagement_t;
 

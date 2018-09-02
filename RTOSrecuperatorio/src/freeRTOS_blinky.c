@@ -6,6 +6,8 @@
  * Examen recuperatorio
  *
  * Fecha: 31/08/2018
+ *
+ * Revision: 2/09/2018
  */
 
 /*==================[inclusiones]============================================*/
@@ -23,11 +25,10 @@
 
 /*==================[definiciones y macros]==================================*/
 /*==================[definiciones de datos internos]=========================*/
-QueueHandle_t queueLaunchLeds;
 QueueHandle_t queueMedicionTiempo;
 QueueHandle_t buttonsInfo;
-QueueHandle_t manejoDeLeds;
-QueueHandle_t manejoDePWM;
+QueueHandle_t manejoDePWMLED1;
+QueueHandle_t manejoDePWMLED2;
 uint8_t LED = LEDR;
 /*==================[definiciones de datos externos]=========================*/
 
@@ -39,7 +40,8 @@ static void checkButtonsDebounce(buttonData_t * buttonData);
 /* Prototipo de funciones de tareas */
 void debounce( void* taskParmPtr );
 void timeMeasure( void* taskParmPtr );
-void taskPwm( void* taskParmPtr );
+void taskPwmLed1( void* taskParmPtr );
+void taskPwmLed2( void* taskParmPtr );
 
 /*==================[funcion principal]======================================*/
 
@@ -54,13 +56,11 @@ int main(void)
    debugPrintConfigUart( UART_USB, 115200 );
    debugPrintlnString( "Blinky con freeRTOS y sAPI." );
 
-
-
+   // Creacion de colas
    buttonsInfo = xQueueCreate( LARGO_COLA_BUTTONS_INFO, sizeof(buttonData_t));
-   queueLaunchLeds = xQueueCreate( LARGO_COLA_LAUNCH_LEDS, sizeof(buttonData_t));
    queueMedicionTiempo = xQueueCreate( LARGO_COLA_MEDICION_TIEMPO, sizeof(buttonData_t));
-   manejoDePWM = xQueueCreate( LARGO_COLA_CICLO_DE_TRABAJO, sizeof(pwmManagement_t));
-   manejoDeLeds = xQueueCreate( LARGO_COLA_MANEJO_DE_LEDS, sizeof(TickType_t));
+   manejoDePWMLED1 = xQueueCreate( LARGO_COLA_CICLO_DE_TRABAJO, sizeof(pwmManagement_t));
+   manejoDePWMLED2 = xQueueCreate( LARGO_COLA_CICLO_DE_TRABAJO, sizeof(pwmManagement_t));
 
    // Creacion tarea debounce
    xTaskCreate(
@@ -82,16 +82,27 @@ int main(void)
       0                             // Puntero a la tarea creada en el sistema
    );
 
-   // Creacion tarea timeMeasure
+   // Creacion tarea taskPwmLed1
    xTaskCreate(
-      taskPwm,                  // Funcion de la tarea a ejecutar
-      (const char *)"taskPwm",  // Nombre de la tarea como String amigable para el usuario
+      taskPwmLed1,                  // Funcion de la tarea a ejecutar
+      (const char *)"taskPwmLed1",  // Nombre de la tarea como String amigable para el usuario
       configMINIMAL_STACK_SIZE*2, 	// Cantidad de stack de la tarea
       0,                            // Parametros de tarea
       tskIDLE_PRIORITY+3,           // Prioridad de la tarea
       0                             // Puntero a la tarea creada en el sistema
     );
 
+   // Creacion tarea taskPwmLed2
+      xTaskCreate(
+         taskPwmLed2,                  // Funcion de la tarea a ejecutar
+         (const char *)"taskPwmLed2",  // Nombre de la tarea como String amigable para el usuario
+         configMINIMAL_STACK_SIZE*2, 	// Cantidad de stack de la tarea
+         0,                            // Parametros de tarea
+         tskIDLE_PRIORITY+3,           // Prioridad de la tarea
+         0                             // Puntero a la tarea creada en el sistema
+       );
+
+   // Configuracion interrupcion gpio
    isrPinLevelConfig();
    // Iniciar scheduler
    vTaskStartScheduler();
@@ -111,11 +122,63 @@ int main(void)
 
 /*==================[definiciones de funciones externas]=====================*/
 
-void taskPwm( void* taskParmPtr ){
+
+void taskPwmLed2( void* taskParmPtr ){
 
 	TickType_t tiempo_inicio_ciclo;
 	static pwmManagement_t pwmManagementStructTemp;
-	static uint8_t LED, counter, ledState;
+	static uint8_t counter, ledState;
+
+	gpioWrite(LED1,ON);
+	gpioWrite(LED2,ON);
+
+	counter = 50;
+
+	ledState = LED1ON;
+
+	while(TRUE){
+
+		if(xQueueReceive( manejoDePWMLED2, &pwmManagementStructTemp, 0 ) == pdTRUE){
+
+			if(pwmManagementStructTemp.pwmDutyFlagSuma == TRUEs){
+				// saturo el contador en 78 porque el led esta totalmente prendido
+				if(counter<100){
+					counter++;
+				}
+			}
+			else if(pwmManagementStructTemp.pwmDutyFlagResta == TRUEs){
+				if(counter!=0){
+				// si es cero dejo de restar para que no se desborde
+					counter--;
+				}
+			}
+
+			if(pwmManagementStructTemp.led1Toggle == TRUEs){
+				if (ledState == LED1ON){
+					ledState = LED1OFF;
+					gpioWrite(LED2,OFF);
+				}
+				else{
+					ledState = LED1ON;
+				}
+			}
+		}
+
+		tiempo_inicio_ciclo = xTaskGetTickCount();
+		if (ledState == LED1ON){
+			gpioWrite(LED2,ON);
+		}
+		vTaskDelay( counter );
+		gpioWrite(LED2,OFF);
+		vTaskDelayUntil( &tiempo_inicio_ciclo, 100 );
+	}
+}
+
+void taskPwmLed1( void* taskParmPtr ){
+
+	TickType_t tiempo_inicio_ciclo;
+	static pwmManagement_t pwmManagementStructTemp;
+	static uint8_t  counter, ledState;
 
 	gpioWrite(LED1,ON);
 	gpioWrite(LED2,ON);
@@ -126,20 +189,18 @@ void taskPwm( void* taskParmPtr ){
 
 	while(TRUE){
 
-		gpioWrite(LED3,ON);
+		if(xQueueReceive( manejoDePWMLED1, &pwmManagementStructTemp, 0 ) == pdTRUE){
 
-		if(xQueueReceive( manejoDePWM, &pwmManagementStructTemp, 0 ) == pdTRUE){
-
-			if(pwmManagementStructTemp.pwmDutyCounter!=EMPTYs){
-				counter = pwmManagementStructTemp.pwmDutyCounter;
-			}
-
-			if(pwmManagementStructTemp.ledSelect == TRUEs){
-				if(LED==LED1){
-					LED=LED2;
+			if(pwmManagementStructTemp.pwmDutyFlagSuma == TRUEs){
+				// saturo el contador en 100 porque el led esta totalmente prendido
+				if(counter<100){
+					counter++;
 				}
-				else{
-					LED=LED1;
+			}
+			else if(pwmManagementStructTemp.pwmDutyFlagResta == TRUEs){
+				// si es cero dejo de restar para que no se desborde
+				if(counter!=0){
+					counter--;
 				}
 			}
 
@@ -147,32 +208,23 @@ void taskPwm( void* taskParmPtr ){
 				if (ledState == LED1ON){
 					ledState = LED1OFF;
 					gpioWrite(LED1,OFF);
-					gpioWrite(LED2,OFF);
 				}
 				else{
 					ledState = LED1ON;
-					gpioWrite(LED1,ON);
-					gpioWrite(LED2,ON);
 				}
 			}
 		}
 
-				tiempo_inicio_ciclo = xTaskGetTickCount();
-
-				if(ledState == LED1ON){
-					gpioWrite(LED,ON);
-				}
-				else{
-					gpioWrite(LED,OFF);
-				}
-
-				vTaskDelay( counter );
-				gpioWrite(LED,OFF);
-				vTaskDelayUntil( &tiempo_inicio_ciclo, 100 );
+		tiempo_inicio_ciclo = xTaskGetTickCount();
+		if (ledState == LED1ON){
+			gpioWrite(LED1,ON);
+		}
+		vTaskDelay( counter );
+		gpioWrite(LED1,OFF);
+		vTaskDelayUntil( &tiempo_inicio_ciclo, 100 );
 
 	}
 }
-
 
 void timeMeasure( void* taskParmPtr ){
 
@@ -181,12 +233,16 @@ void timeMeasure( void* taskParmPtr ){
 	static pwmManagement_t pwmManagementStruct;
 
 	uint8_t dutyCycleCounter = 50;
+	uint8_t ledAnt = LED2;
+	uint8_t ocurrioEvento = 0;
 
 	TickType_t tiempoMedicionInicial;
 	TickType_t tiempoMedicionFinal;
 	TickType_t tiempoEntreEventos;
 
-	pwmManagementStruct.pwmDutyCounter = EMPTYs;
+	//pwmManagementStruct.pwmDutyCounter = EMPTYs;
+	pwmManagementStruct.pwmDutyFlagSuma = EMPTYs;
+	pwmManagementStruct.pwmDutyFlagResta = EMPTYs;
 	pwmManagementStruct.ledSelect = LED1A;
 	pwmManagementStruct.led1Toggle = LED1ON;
 
@@ -197,21 +253,21 @@ void timeMeasure( void* taskParmPtr ){
 		xQueueReceive( queueMedicionTiempo, &buttonDataTemp, portMAX_DELAY );
 
 			if((buttonDataTemp.buttonIndex == TECLA1)&&(buttonDataTemp.buttonLastState == FALLING)){
-				dutyCycleCounter++;
-				pwmManagementStruct.pwmDutyCounter = dutyCycleCounter;
+
+				pwmManagementStruct.pwmDutyFlagSuma = TRUEs;
+				pwmManagementStruct.pwmDutyFlagResta = FALSEs;
 				pwmManagementStruct.ledSelect = EMPTYs;
 				pwmManagementStruct.led1Toggle = EMPTYs;
-
-				xQueueSend(manejoDePWM, &pwmManagementStruct, portMAX_DELAY);
+				ocurrioEvento = 1;
 
 			}
 			else if((buttonDataTemp.buttonIndex == TECLA2)&&(buttonDataTemp.buttonLastState == FALLING)){
-				dutyCycleCounter--;
-				pwmManagementStruct.pwmDutyCounter = dutyCycleCounter;
+
+				pwmManagementStruct.pwmDutyFlagSuma = FALSEs;
+				pwmManagementStruct.pwmDutyFlagResta = TRUEs;
 				pwmManagementStruct.ledSelect = EMPTYs;
 				pwmManagementStruct.led1Toggle = EMPTYs;
-
-				xQueueSend(manejoDePWM, &pwmManagementStruct, portMAX_DELAY);
+				ocurrioEvento = 1;
 
 			}else if(buttonDataTemp.buttonIndex == TECLA3){
 
@@ -226,15 +282,49 @@ void timeMeasure( void* taskParmPtr ){
 
 							pwmManagementStruct.ledSelect = TRUEs;
 							pwmManagementStruct.led1Toggle = FALSEs;
+							pwmManagementStruct.pwmDutyFlagSuma = EMPTYs;
+							pwmManagementStruct.pwmDutyFlagResta = EMPTYs;
 
 						}else if(tiempoEntreEventos > 500*portTICK_RATE_MS){
 							pwmManagementStruct.ledSelect = FALSEs;
 							pwmManagementStruct.led1Toggle = TRUEs;
+							pwmManagementStruct.pwmDutyFlagSuma = EMPTYs;
+							pwmManagementStruct.pwmDutyFlagResta = EMPTYs;
 
 						}
-						xQueueSend(manejoDePWM, &pwmManagementStruct, portMAX_DELAY);
+						ocurrioEvento = 1;
 					}
 			buttonDataTemp.buttonIndex = _NONE;
+		}
+		// Si se presiono alguna tecla envio datos a las tareas de pwm
+		if(ocurrioEvento == 1){
+			ocurrioEvento = 0;
+			// switcheo de tarea a la que se envia el contador
+			if((pwmManagementStruct.ledSelect == TRUEs)){
+				if (ledAnt == LED2){
+					//xQueueSend(manejoDePWMLED1, &pwmManagementStruct, portMAX_DELAY);
+					ledAnt = LED1;
+				}
+				else if(ledAnt == LED1){
+					//xQueueSend(manejoDePWMLED2, &pwmManagementStruct, portMAX_DELAY);
+					ledAnt = LED2;
+				}
+			}
+			// sino ocurrio un evento de switcheo envio a la que estaba y no modifico la tarea a la que se envia
+			else if((pwmManagementStruct.ledSelect == EMPTYs)){
+				// Se envia si hay que sumar o restar 1 al ciclo de trabajo del pwm
+				if (ledAnt == LED2){
+					xQueueSend(manejoDePWMLED1, &pwmManagementStruct, portMAX_DELAY);
+				}
+				else if(ledAnt == LED1){
+					xQueueSend(manejoDePWMLED2, &pwmManagementStruct, portMAX_DELAY);
+				}
+			}
+			else if((pwmManagementStruct.ledSelect == FALSEs)){
+				//como se deben apagar o prender ambos led se envia a las dos tareas de manejo de pwm
+				xQueueSend(manejoDePWMLED1, &pwmManagementStruct, portMAX_DELAY);
+				xQueueSend(manejoDePWMLED2, &pwmManagementStruct, portMAX_DELAY);
+			}
 		}
 	}
 }
